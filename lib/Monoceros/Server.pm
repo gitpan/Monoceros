@@ -8,7 +8,6 @@ use IO::Select;
 use IO::FDPass;
 use Parallel::Prefork;
 use AnyEvent;
-use AnyEvent::Handle;
 use AnyEvent::Util qw(fh_nonblocking);
 use Digest::MD5 qw/md5_hex/;
 use Time::HiRes qw/time/;
@@ -16,7 +15,7 @@ use Carp ();
 use Plack::Util;
 use POSIX qw(EINTR EAGAIN EWOULDBLOCK :sys_wait_h);
 use Socket qw(IPPROTO_TCP TCP_NODELAY);
-use List::Util qw/shuffle first/;
+use List::Util qw/first/;
 
 use constant WRITER => 0;
 use constant READER => 1;
@@ -198,9 +197,9 @@ sub connection_manager {
                 delete $wait_read{$key};
                 delete $sockets{$key};
             }
-            if ( !$sockets{$key}->[S_IDLE] && $time - $sockets{$key}->[1] > $self->{keepalive_timeout} ) {
+            elsif ( !$sockets{$key}->[S_IDLE] && $time - $sockets{$key}->[1] > $self->{keepalive_timeout} ) {
                 # not idle && timeout
-                if ( ! $sockets{$key}->[S_SOCK]->connected() ) {
+                if ( !$sockets{$key}->[S_SOCK] || !$sockets{$key}->[S_SOCK]->connected() ) {
                     delete $wait_read{$key};
                     delete $sockets{$key};
                 }
@@ -223,28 +222,44 @@ sub connection_manager {
         }
         else {
             $wait_read{$remote} = AE::io $fh, 0, sub {
-                $self->queued_fdsend($sockets{$remote});
                 undef $wait_read{$remote};
+                $self->queued_fdsend($sockets{$remote});
             };
         }
     };
 
+    my $pipe_buf = '';
     $manager{worker_listener} = AE::io $self->{worker_pipe}->[READER], 0, sub {
-        my $len = $self->{worker_pipe}->[READER]->sysread(my $buf, 36);
-        my ($method,$remote) = split / /,$buf, 2;
-        return unless exists $sockets{$remote};
-        if ( $method eq 'end' ) {
-            $sockets{$remote}->[S_IDLE] = 1; #idle
-            delete $sockets{$remote};
-        } elsif ( $method eq 'kep' ) {
-            $sockets{$remote}->[S_TIME] = time; #time
+        my @keep;
+        PIPE_READ: for (1..$self->{max_workers}) {
+            my $len = $self->{worker_pipe}->[READER]->sysread($pipe_buf, 10240);
+            last PIPE_READ if $! == Errno::EAGAIN || $! == Errno::EWOULDBLOCK;
+            BUF_READ: while ( length $pipe_buf ) {
+                my $string = substr $pipe_buf, 0, 37, '';
+                my ($method,$remote) = split / /,$string, 2;
+                next BUF_READ unless exists $sockets{$remote};
+                if ( $method eq 'exit' ) {
+                    $sockets{$remote}->[S_IDLE] = 1; #idle
+                    delete $sockets{$remote};
+                } elsif ( $method eq 'keep') {
+                    push @keep, $remote;
+                }
+                last BUF_READ if length $pipe_buf < 37;
+            }
+        }
+
+        my $time = time;
+        for my $remote ( @keep ) {
+            $sockets{$remote}->[S_TIME] = $time; #time
             $sockets{$remote}->[S_REQS]++; #reqs
             $sockets{$remote}->[S_IDLE] = 1; #idle
             $wait_read{$remote} = AE::io $sockets{$remote}->[S_SOCK], 0, sub {
-                $self->queued_fdsend($sockets{$remote});
                 undef $wait_read{$remote};
+                $self->queued_fdsend($sockets{$remote}) 
+                    if $sockets{$remote}->[S_SOCK] && $sockets{$remote}->[S_SOCK]->connected();
             };
         }
+
     };
 
     $cv->recv;
@@ -294,7 +309,6 @@ sub request_worker {
                 
             };
             local $SIG{PIPE} = 'IGNORE';
-             
             while ( $proc_req_count < $max_reqs_per_child ) {
                 my @can_read = $select_lstn_pipes->can_read(1);
                 if ( !@can_read ) {
@@ -314,11 +328,12 @@ sub request_worker {
                 }
 
                 next unless defined $fd;
-                ++$proc_req_count;
                 my $conn = IO::Socket::INET->new_from_fd($fd,'r+')
                     or die "unable to convert file descriptor to handle: $!";
                 my $peername = $conn->peername;
                 next unless $peername; #??
+
+                ++$proc_req_count;
                 my ($peerport,$peerhost) = unpack_sockaddr_in $peername;
                 my $remote = md5_hex($peername);
                 my $env = {
@@ -342,11 +357,10 @@ sub request_worker {
                 my $is_keepalive = 1; # to use "keepalive_timeout" in handle_connection, 
                                       #  treat every connection as keepalive 
                 my $keepalive = $self->handle_connection($env, $conn, $app, $pipe_n != CLOSE_CONNECTION, $is_keepalive);
-                my $method = 'end';
+                my $method = 'exit';
                 if ( !$self->{term_received} && $keepalive ) {
-                    $method = 'kep';
+                    $method = 'keep';
                 }
-                
                 my $len = $self->{worker_pipe}->[WRITER]->syswrite("$method $remote");
             }
         });
