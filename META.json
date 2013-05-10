@@ -64,7 +64,7 @@
    "provides" : {
       "Monoceros" : {
          "file" : "lib/Monoceros.pm",
-         "version" : "0.06"
+         "version" : "0.07"
       },
       "Monoceros::Server" : {
          "file" : "lib/Monoceros/Server.pm"
@@ -84,5 +84,5 @@
          "web" : "https://github.com/kazeburo/Monoceros"
       }
    },
-   "version" : "0.06"
+   "version" : "0.07"
 }
