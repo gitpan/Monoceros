@@ -11,5 +11,7 @@ t/00_compile.t
 t/01_placktest.t
 t/02_graceful.t
 t/03_post.t
+t/04_chunked_req.t
+t/05_chunked_zero_length.t
 META.yml
 MANIFEST
