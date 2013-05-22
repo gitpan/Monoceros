@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.008005;
 
-our $VERSION = "0.12";
+our $VERSION = "0.13";
 
 1;
 __END__
@@ -75,6 +75,10 @@ max. number of requests to be handled before a worker process exits (default: 10
 =head2 --min-reqs-per-child=#
 
 if set, randomizes the number of requests handled by a single worker process between the value and that supplied by C<--max-reqs-per-chlid> (default: none)
+
+=head2 --max-keepalive-connection=#
+
+number of connections to keep in the manager process. If you want to increase this value, You should check your system limitations. (default: half number of POSIX::_SC_OPEN_MAX)
 
 =head1 RECOMMENDED MODULES
 
