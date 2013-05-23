@@ -30,7 +30,7 @@ no_index:
 provides:
   Monoceros:
     file: lib/Monoceros.pm
-    version: 0.14
+    version: 0.15
   Monoceros::Server:
     file: lib/Monoceros/Server.pm
   Plack::Handler::Monoceros:
@@ -48,4 +48,4 @@ resources:
   bugtracker: https://github.com/kazeburo/Monoceros/issues
   homepage: https://github.com/kazeburo/Monoceros
   repository: git://github.com/kazeburo/Monoceros.git
-version: 0.14
+version: 0.15
