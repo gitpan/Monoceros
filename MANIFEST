@@ -7,11 +7,13 @@ cpanfile
 lib/Monoceros.pm
 lib/Monoceros/Server.pm
 lib/Plack/Handler/Monoceros.pm
+lib/Plack/Middleware/MonocerosStatus.pm
 t/00_compile.t
 t/01_placktest.t
 t/02_graceful.t
 t/03_post.t
 t/04_chunked_req.t
 t/05_chunked_zero_length.t
+t/06_middleware.t
 META.yml
 MANIFEST

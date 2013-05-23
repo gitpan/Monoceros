@@ -30,14 +30,17 @@ no_index:
 provides:
   Monoceros:
     file: lib/Monoceros.pm
-    version: 0.13
+    version: 0.14
   Monoceros::Server:
     file: lib/Monoceros/Server.pm
   Plack::Handler::Monoceros:
     file: lib/Plack/Handler/Monoceros.pm
+  Plack::Middleware::MonocerosStatus:
+    file: lib/Plack/Middleware/MonocerosStatus.pm
 requires:
   AnyEvent: 7.04
   IO::FDPass: 1.0
+  Net::CIDR::Lite: 0
   Plack: 1.0023
   Starlet: 0.18
   perl: 5.008005
@@ -45,4 +48,4 @@ resources:
   bugtracker: https://github.com/kazeburo/Monoceros/issues
   homepage: https://github.com/kazeburo/Monoceros
   repository: git://github.com/kazeburo/Monoceros.git
-version: 0.13
+version: 0.14

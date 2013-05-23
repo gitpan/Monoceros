@@ -151,7 +151,7 @@ sub queued_fdsend {
             if ( ! exists $self->{sockets}{$fd}  ) {
                 next;
             }
-            if ( !$self->{sockets}{$fd}[S_SOCK] || !$self->{sockets}{$fd}[S_SOCK]->connected ) {
+            if ( !$self->{sockets}{$fd}[S_SOCK] || !getpeername($self->{sockets}{$fd}[S_SOCK]) ) {
                 delete $self->{sockets}{$fd};
                 next;
             }
@@ -241,10 +241,11 @@ sub connection_manager {
 
     $manager{internal_server} = AE::io $self->{internal_server}, 0, sub {
         my $sock = $self->{internal_server}->accept;
+        fh_nonblocking($sock,1);
         return unless $sock;
         my $buf = '';
         my $state = 'cmd';
-        my $ws; $ws = AE::io $sock, 0, sub {
+        my $ws; $ws = AE::io fileno $sock, 0, sub {
             if ( $state eq 'cmd' ) {
                 my $len = sysread($sock, $buf, 37 - length($buf), length($buf));
                 if ( defined $len && $len == 0 ) {
@@ -259,6 +260,16 @@ sub connection_manager {
                 
                 # stat
                 if ( $method eq 'stat' ) {
+                    my $queued = scalar @{$self->{fdsend_queue}};
+                    my $active = scalar grep { !$self->{sockets}{$_}[S_IDLE] } keys %{$self->{sockets}};
+                    $active = $active - $queued;
+                    my $idle = scalar grep { $self->{sockets}{$_}[S_IDLE] } keys %{$self->{sockets}};
+                    my $msg = "Processing: $active\015\012";
+                    $msg .= "Waiting: $idle\015\012";
+                    $msg .= "Queued: $queued\015\012\015\012";
+                    $self->write_all_aeio($sock, $msg, $self->{keepalive_timeout});
+                }
+                if ( $method eq 'cout' ) {
                     my $msg = ( scalar keys %{$self->{sockets}} < $self->{max_keepalive_connection} ) ? 'OK' : 'NG';
                     $self->write_all_aeio($sock, $msg, $self->{keepalive_timeout});
                     return;
@@ -286,7 +297,7 @@ sub connection_manager {
                     $self->{sockets}{$fd}[S_TIME] = time; #time
                     $self->{sockets}{$fd}[S_REQS]++; #reqs
                     $self->{sockets}{$fd}[S_IDLE] = 1; #idle
-                    $wait_read{$fd} = AE::io $self->{sockets}{$fd}[S_SOCK], 0, sub {
+                    $wait_read{$fd} = AE::io $fd, 0, sub {
                         delete $wait_read{$fd};
                         $self->queued_fdsend($fd);
                     };
@@ -301,18 +312,17 @@ sub connection_manager {
                     return;
                 }
 
-                my $fh = IO::Socket::INET->new_from_fd($fd,'r+');
+                open(my $fh, '+<&=', $fd);
                 if ( !$fh ) {
                     warn "unable to convert file descriptor to handle: $!";
                     return;
                 }
-
-                my $peername = $fh->peername;
+                my $peername = getpeername($fh);
                 return unless $peername;
                 my $remote = md5_hex($peername);
                 $self->{sockets}{$fd} = [$fh,time,1,1];  #fh,time,reqs,idle,buf
                 $hash2fd{$remote} = $fd;
-                $wait_read{$fd} = AE::io $self->{sockets}{$fd}[S_SOCK], 0, sub {
+                $wait_read{$fd} = AE::io $fd, 0, sub {
                     delete $wait_read{$fd};
                     $self->queued_fdsend($fd);
                 };
@@ -397,7 +407,7 @@ sub request_worker {
             ) or die "$!";
             $self->{mgr_sock}->blocking(0);
             
-            $self->cmd_to_mgr("stat",'x'x32);
+            $self->cmd_to_mgr("cout",'x'x32);
             my $buf = '';
             my $to_read = 2;
             while ( length $buf < $to_read ) {
@@ -469,6 +479,7 @@ sub request_worker {
                     'psgi.nonblocking'  => Plack::Util::FALSE,
                     'psgix.input.buffered' => Plack::Util::TRUE,
                     'psgix.io'          => $conn->{fh},
+                    'X_MONOCEROS_WORKER_SOCK' => $self->{worker_sock},
                 };
                 $self->{_is_deferred_accept} = 1; #ready to read
                 my $prebuf;
