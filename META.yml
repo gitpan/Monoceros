@@ -6,7 +6,7 @@ build_requires:
   LWP::UserAgent: 0
   Plack::Test::Suite: 0
   Test::More: 0.98
-  Test::TCP: 1.26
+  Test::TCP: 1.27
 configure_requires:
   CPAN::Meta: 0
   CPAN::Meta::Prereqs: 0
@@ -30,7 +30,7 @@ no_index:
 provides:
   Monoceros:
     file: lib/Monoceros.pm
-    version: 0.15
+    version: 0.16
   Monoceros::Server:
     file: lib/Monoceros/Server.pm
   Plack::Handler::Monoceros:
@@ -48,4 +48,4 @@ resources:
   bugtracker: https://github.com/kazeburo/Monoceros/issues
   homepage: https://github.com/kazeburo/Monoceros
   repository: git://github.com/kazeburo/Monoceros.git
-version: 0.15
+version: 0.16

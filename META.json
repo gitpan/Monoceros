@@ -58,14 +58,14 @@
             "LWP::UserAgent" : "0",
             "Plack::Test::Suite" : "0",
             "Test::More" : "0.98",
-            "Test::TCP" : "1.26"
+            "Test::TCP" : "1.27"
          }
       }
    },
    "provides" : {
       "Monoceros" : {
          "file" : "lib/Monoceros.pm",
-         "version" : "0.15"
+         "version" : "0.16"
       },
       "Monoceros::Server" : {
          "file" : "lib/Monoceros/Server.pm"
@@ -88,5 +88,5 @@
          "web" : "https://github.com/kazeburo/Monoceros"
       }
    },
-   "version" : "0.15"
+   "version" : "0.16"
 }
