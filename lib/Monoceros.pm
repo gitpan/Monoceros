@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.008005;
 
-our $VERSION = "0.16";
+our $VERSION = "0.17";
 
 1;
 __END__
@@ -49,7 +49,7 @@ And this server inherit L<Starlet>. Monoceros supports following features too.
 
 - fast HTTP processing using L<HTTP::Parser::XS> (optional)
 
-But Monoceros does not support max-keepalive-reqs and spawn-interval.
+Currently, Monoceros does not support spawn-interval and max-keepalive-reqs.
 
 =head1 COMMAND LINE OPTIONS
 
@@ -78,7 +78,11 @@ if set, randomizes the number of requests handled by a single worker process bet
 
 =head2 --max-keepalive-connection=#
 
-number of connections to keep in the manager process. If you want to increase this value, You should check your system limitations. (default: half number of POSIX::_SC_OPEN_MAX)
+max, number of connections to keep in the manager process. If you want to increase this value, You should check your system limitations. (default: half number of POSIX::_SC_OPEN_MAX)
+
+=head2 --max-readahead-reqs=#
+
+max. number of requests to continue to read a request in a worker process. Monoceros can read a next request after the response for maximum throughput. (default: 100)
 
 =head1 RECOMMENDED MODULES
 

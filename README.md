@@ -36,7 +36,7 @@ And this server inherit [Starlet](http://search.cpan.org/perldoc?Starlet). Monoc
 
 \- fast HTTP processing using [HTTP::Parser::XS](http://search.cpan.org/perldoc?HTTP::Parser::XS) (optional)
 
-But Monoceros does not support max-keepalive-reqs and spawn-interval.
+Currently, Monoceros does not support spawn-interval and max-keepalive-reqs.
 
 # COMMAND LINE OPTIONS
 
@@ -65,7 +65,11 @@ if set, randomizes the number of requests handled by a single worker process bet
 
 ## \--max-keepalive-connection=\#
 
-number of connections to keep in the manager process. If you want to increase this value, You should check your system limitations. (default: half number of POSIX::\_SC\_OPEN\_MAX)
+max, number of connections to keep in the manager process. If you want to increase this value, You should check your system limitations. (default: half number of POSIX::\_SC\_OPEN\_MAX)
+
+## \--max-readahead-reqs=\#
+
+max. number of requests to continue to read a request in a worker process. Monoceros can read a next request after the response for maximum throughput. (default: 100)
 
 # RECOMMENDED MODULES
 
