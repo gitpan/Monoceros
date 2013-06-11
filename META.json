@@ -43,6 +43,7 @@
             "AnyEvent" : "7.04",
             "IO::FDPass" : "1.0",
             "Net::CIDR::Lite" : "0",
+            "POSIX::Socket" : "0",
             "POSIX::getpeername" : "0",
             "Plack" : "1.0023",
             "Starlet" : "0.18",
@@ -59,14 +60,14 @@
             "LWP::UserAgent" : "0",
             "Plack::Test::Suite" : "0",
             "Test::More" : "0.98",
-            "Test::TCP" : "1.30"
+            "Test::TCP" : "2.00"
          }
       }
    },
    "provides" : {
       "Monoceros" : {
          "file" : "lib/Monoceros.pm",
-         "version" : "0.17"
+         "version" : "0.18"
       },
       "Monoceros::Server" : {
          "file" : "lib/Monoceros/Server.pm"
@@ -89,5 +90,5 @@
          "web" : "https://github.com/kazeburo/Monoceros"
       }
    },
-   "version" : "0.17"
+   "version" : "0.18"
 }

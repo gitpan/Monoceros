@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.008005;
 
-our $VERSION = "0.17";
+our $VERSION = "0.18";
 
 1;
 __END__
@@ -83,6 +83,11 @@ max, number of connections to keep in the manager process. If you want to increa
 =head2 --max-readahead-reqs=#
 
 max. number of requests to continue to read a request in a worker process. Monoceros can read a next request after the response for maximum throughput. (default: 100)
+
+=head2 --min-readahead-reqs=#
+
+if set, randomizes the number of requests to continue to read a request between the value and that supplied by C<--max-readahead-reqs> (default: none)
+
 
 =head1 RECOMMENDED MODULES
 

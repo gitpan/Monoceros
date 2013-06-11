@@ -4,7 +4,6 @@ use strict;
 use warnings;
 use base qw/Plack::Handler::Starlet/;
 use IO::Socket;
-use IO::Select;
 use IO::FDPass;
 use Parallel::Prefork;
 use AnyEvent;
@@ -16,6 +15,8 @@ use Plack::Util;
 use Plack::HTTPParser qw( parse_http_request );
 use POSIX qw(EINTR EAGAIN EWOULDBLOCK ESPIPE ENOBUFS :sys_wait_h);
 use POSIX::getpeername qw/_getpeername/;
+use POSIX::Socket;
+use Fcntl;
 use Socket qw(IPPROTO_TCP TCP_NODELAY);
 use File::Temp qw/tempfile/;
 use Digest::MD5 qw/md5/;
@@ -73,7 +74,14 @@ sub new {
         timeout              => $args{timeout} || 300,
         keepalive_timeout    => $args{keepalive_timeout} || 10,
         max_keepalive_connection => $args{max_keepalive_connection} || int($open_max/2),
-        max_readahead_reqs   => $args{max_readahead_reqs} || 100,
+        max_readahead_reqs   => (
+            defined $args{max_readahead_reqs}
+                ? $args{max_readahead_reqs} : 100
+        ),
+        min_readahead_reqs   => (
+            defined $args{min_readahead_reqs}
+                ? $args{min_readahead_reqs} : undef,
+        ),
         server_software      => $args{server_software} || $class,
         server_ready         => $args{server_ready} || sub {},
         min_reqs_per_child   => (
@@ -188,13 +196,14 @@ sub update_sock_stat {
     my $self = shift;
     my $state = scalar keys %{$self->{sockets}} < $self->{max_keepalive_connection};
     return if $state eq $prev_state;
+    $prev_state = $state;
     if ( $state ) {
         unlink $self->{sock_stat_link};
     }
     else {
-        symlink $self->{worker_sock}, $self->{sock_stat_link};
+        symlink $self->{sock_stat_link}.".$$", $self->{sock_stat_link};
     }
-    $prev_state = $state;
+    
 }
 
 sub can_keepalive {
@@ -293,30 +302,27 @@ sub connection_manager {
         
         my $ws; $ws = AE::io fileno $sock, 0, sub {
             if ( $state->{state} eq 'cmd' ) {
-                my $len = sysread($sock, $state->{buf}, 28 - length($state->{buf}), length($state->{buf}));
-                if ( defined $len && $len == 0 ) {
-                    undef $ws;
-                    delete $m_state{$sock->fileno};
+                my $ret = _recv(fileno($sock), my $buf, 28 - length($state->{buf}), 0);
+                if ( !defined $ret && ($! == EINTR || $! == EAGAIN || $! == EWOULDBLOCK) ) {
                     return;
                 }
+                if ( !defined $ret ) {
+                    warn "failed to recv from sock: $!";
+                    undef $ws;
+                    delete $m_state{$sock->fileno};
+                    return;                                        
+                }
+                if ( defined $buf && length $buf == 0) {
+                    undef $ws;
+                    delete $m_state{$sock->fileno};
+                    return;                    
+                }
+                $state->{buf} .= $buf;
                 return if length $state->{buf} < 28;
                 my $msg = substr $state->{buf}, 0, 28, '';
                 my $method = substr($msg, 0, 4,'');
                 my $sockid = substr($msg, 0, 16, '');
                 my $reqs = hex($msg);
-
-                # stat
-                if ( $method eq 'stat' ) {
-                    my $processing = scalar grep { !$self->{sockets}{$_}[S_STATE] == 1 } keys %{$self->{sockets}};
-                    my $idle = scalar grep { $self->{sockets}{$_}[S_STATE] == 0 } keys %{$self->{sockets}};
-                    my $total = $processing + $idle;
-                    my $msg = "Total: $total\015\012";
-                    $msg .= "Waiting: $idle\015\012";
-                    $msg .= "Processing: $processing\015\012";
-                    $msg .= "MaxWorkers: ".$self->{max_workers}."\015\012\015\012";
-                    $self->write_all_aeio($sock, $msg, $self->{timeout});
-                    return;
-                }
 
                 if ( $method eq 'push' ) {
                     $state->{state} = 'recv_fd';
@@ -325,7 +331,7 @@ sub connection_manager {
                 }
                 elsif ( $method eq 'keep' ) {
                     if ( exists $self->{sockets}{$sockid} ) {
-                        $self->{sockets}{$sockid}[S_TIME] = time;
+                        $self->{sockets}{$sockid}[S_TIME] = AnyEvent->now;
                         $self->{sockets}{$sockid}[S_REQS] += $reqs;
                         $self->{sockets}{$sockid}[S_STATE] = 0;
                         $wait_read{$sockid} = AE::io $self->{sockets}{$sockid}[S_FD], 0, sub {
@@ -336,7 +342,17 @@ sub connection_manager {
                 }
                 elsif ( $method eq 'clos' ) {
                     delete $self->{sockets}{$sockid};
-                    $self->update_sock_stat();   
+                    $self->update_sock_stat();
+                }
+                elsif ( $method eq 'stat' ) {
+                    my $processing = scalar grep { !$self->{sockets}{$_}[S_STATE] == 1 } keys %{$self->{sockets}};
+                    my $idle = scalar grep { $self->{sockets}{$_}[S_STATE] == 0 } keys %{$self->{sockets}};
+                    my $total = $processing + $idle;
+                    my $msg = "Total: $total\015\012";
+                    $msg .= "Waiting: $idle\015\012";
+                    $msg .= "Processing: $processing\015\012";
+                    $msg .= "MaxWorkers: ".$self->{max_workers}."\015\012\015\012";
+                    $self->write_all_aeio($sock, $msg, $self->{timeout});
                 }
             }
 
@@ -355,14 +371,14 @@ sub connection_manager {
                 $self->{sockets}{$sockid} = [
                     AnyEvent::Util::guard { POSIX::close($fd) },
                     $fd,
-                    time,
+                    AnyEvent->now,
                     $reqs,
                     0
                 ]; #guard,fd,time,reqs,state
                 $self->update_sock_stat();
                 $wait_read{$sockid} = AE::io $fd, 0, sub {
                     delete $wait_read{$sockid};
-                    $self->queued_send($sockid);
+                    $self->queued_send($sockid); 
                 };
             } # cmd
         } # AE::io
@@ -433,15 +449,12 @@ sub request_worker {
 
     while ($pm->signal_received !~ /^(?:TERM|USR1)$/) {
         $pm->start(sub {
-            srand();
-            my %sys_fileno = (
-                $self->{lstn_pipe}[READER]->fileno => 1,
-                $self->{listen_sock}->fileno => 1,
-            );
-            $self->{select} = IO::Select->new(
-                $self->{lstn_pipe}[READER],
-                $self->{listen_sock}
-            );
+            $self->{fhlist} = [$self->{lstn_pipe}[READER], $self->{listen_sock}];
+            $self->{fdlist} = [fileno $self->{lstn_pipe}[READER], fileno $self->{listen_sock}];
+            $self->{fhbits} = '';
+            for ( @{$self->{fdlist}} ) {
+                vec($self->{fhbits}, $_, 1) = 1;
+            }
 
             $self->{mgr_sock} = IO::Socket::UNIX->new(
                 Type => SOCK_STREAM,
@@ -449,7 +462,15 @@ sub request_worker {
             ) or die "$!";
             $self->{mgr_sock}->blocking(0);
             
-            my $max_reqs_per_child = $self->_calc_reqs_per_child();
+            my $max_reqs_per_child = $self->_calc_minmax_per_child(
+                $self->{max_reqs_per_child},
+                $self->{min_reqs_per_child}
+            );
+            my $max_readahead_reqs = $self->_calc_minmax_per_child(
+                $self->{max_readahead_reqs},
+                $self->{min_readahead_reqs}
+            );
+
             my $proc_req_count = 0;
             
             $self->{term_received} = 0;
@@ -459,7 +480,10 @@ sub request_worker {
                 exit 0 if $self->{term_received} > 1;
             };
             local $SIG{USR1} = sub {
-                $self->{select}->remove($self->{listen_sock});
+                $self->{fhlist} = [$self->{lstn_pipe}[READER]];
+                $self->{fdlist} = [fileno $self->{lstn_pipe}[READER]];
+                $self->{fhbits} = '';
+                vec($self->{fhbits}, fileno($self->{lstn_pipe}[READER]), 1) = 1;
                 $self->{stop_accept}++;
             };
 
@@ -474,32 +498,44 @@ sub request_worker {
                 my $conn;
                 if ( $next_conn && $next_conn->{buf} ) { #read ahead or pipeline
                     $conn = $next_conn;
+                    $next_conn = undef;
                 }
                 else {
-                    my @can_read = $self->{select}->can_read(1);
-                    for (@can_read) {
-                        if ( $next_conn && $_->fileno == $next_conn->{fh}->fileno ) {
-                            $conn = $next_conn;
+                    my @rfd = @{$self->{fdlist}};
+                    my $rfd = $self->{fhbits};
+                    if ( $next_conn ) {
+                        push @rfd, $next_conn->{fd};
+                        vec($rfd, $next_conn->{fd}, 1) = 1;
+                    }                    
+                    my @can_read;
+                    if ( select($rfd, undef, undef, 1) > 0 ) {
+                        for ( my $i = 0; $i <= $#rfd; $i++ ) {
+                            if ( !defined $rfd || vec($rfd, $rfd[$i], 1) ) {
+                                my $can_read_fd = $rfd[$i];
+                                if ( $next_conn && $next_conn->{fd} == $can_read_fd ) {
+                                    $conn = $next_conn;
+                                    last;
+                                }
+                                push @can_read, $self->{fhlist}[$i];
+                            }
                         }
                     }
                     #read ahead. but still cannot read
                     $self->keep_it($next_conn) if $next_conn && !$conn;
+                    $next_conn = undef;
                     #accept or recv
-                    $conn = $self->accept_or_recv( grep { exists $sys_fileno{$_->fileno} } @can_read )
+                    $conn = $self->accept_or_recv( @can_read )
                         unless $conn;
                 }
-                $self->{select}->remove($next_conn->{fh}) if $next_conn;
-                $next_conn = undef;
                 next unless $conn;
                 
                 ++$proc_req_count;
-                my ($peerport,$peerhost) = unpack_sockaddr_in $conn->{peername};
                 my $env = {
                     SERVER_PORT => $self->{port},
                     SERVER_NAME => $self->{host},
                     SCRIPT_NAME => '',
-                    REMOTE_ADDR => inet_ntoa($peerhost),
-                    REMOTE_PORT => $peerport,
+                    REMOTE_ADDR => $conn->{peeraddr},
+                    REMOTE_PORT => $conn->{peerport},
                     'psgi.version' => [ 1, 1 ],
                     'psgi.errors'  => *STDERR,
                     'psgi.url_scheme' => 'http',
@@ -509,7 +545,6 @@ sub request_worker {
                     'psgi.streaming'    => Plack::Util::TRUE,
                     'psgi.nonblocking'  => Plack::Util::FALSE,
                     'psgix.input.buffered' => Plack::Util::TRUE,
-                    'psgix.io'          => $conn->{fh},
                     'X_MONOCEROS_WORKER_SOCK' => $self->{worker_sock},
                 };
                 $self->{_is_deferred_accept} = 1; #ready to read
@@ -519,12 +554,12 @@ sub request_worker {
                 }
                 else {
                     #pre-read
-                    my $ret = $conn->{fh}->sysread($prebuf, MAX_REQUEST_SIZE);
+                    my $ret = POSIX::read($conn->{fd}, $prebuf, MAX_REQUEST_SIZE);
                     if ( ! defined $ret && ($! == EAGAIN || $! == EWOULDBLOCK || $! == EINTR) ) {
                         $self->keep_it($conn);
                         next;
                     }
-                    elsif ( defined $ret && $ret == 0 ) {
+                    elsif ( defined $ret && $ret == 0) {
                         #closed
                         $self->cmd_to_mgr('clos', $conn->{peername}, $conn->{reqs}) 
                             if !$conn->{direct};
@@ -536,9 +571,9 @@ sub request_worker {
                 $may_keepalive = 0 if ($self->{term_received} || $self->{stop_accept});
                 my $is_keepalive = 1; # to use "keepalive_timeout" in handle_connection, 
                                       #  treat every connection as keepalive
-                my ($keepalive,$pipelined_buf) = $self->handle_connection($env, $conn->{fh}, $app, 
+                my ($keepalive,$pipelined_buf) = $self->handle_connection($env, $conn->{fd}, $app, 
                                                          $may_keepalive, $is_keepalive, $prebuf, 
-                                                         $conn->{direct}, $conn->{reqs});
+                                                         $conn->{reqs});
                 $conn->{reqs}++;
                 if ( !$keepalive ) {
                     #close
@@ -555,20 +590,19 @@ sub request_worker {
                 }
 
                 # read ahead
-                if ( $conn->{reqs} < $self->{max_readahead_reqs} &&  $proc_req_count < $max_reqs_per_child ) {
-                    my $ret = $conn->{fh}->sysread(my $buf, MAX_REQUEST_SIZE);
+                if ( $conn->{reqs} < $max_readahead_reqs &&  $proc_req_count < $max_reqs_per_child ) {
+                    my $ret = POSIX::read($conn->{fd}, my $buf, MAX_REQUEST_SIZE);
                     if ( defined $ret && $ret > 0 ) {
                         $next_conn = $conn;
                         $next_conn->{buf} = $buf;
                         next;
                     }
-                    elsif ( defined $ret && $ret == 0 ) {
+                    elsif ( defined $ret ) {
                         #closed?
                         $self->cmd_to_mgr('clos', $conn->{peername}, $conn->{reqs})
                              if !$conn->{direct};
                         next;
                     }
-                    $self->{select}->add($conn->{fh});
                     $next_conn = $conn;
                     next;
                 }
@@ -576,8 +610,7 @@ sub request_worker {
                 # wait
                 $self->keep_it($conn);
             }
-        });
-
+        }); #start
     }
     local $SIG{TERM} = sub {
         $pm->signal_all_children('TERM');
@@ -590,7 +623,7 @@ sub request_worker {
 sub cmd_to_mgr {
     my ($self,$cmd,$peername,$reqs) = @_;
     my $msg = $cmd . Digest::MD5::md5($peername) . sprintf('%08x',$reqs);
-    $self->write_all($self->{mgr_sock}, $msg, $self->{timeout}) or die $!;
+    _sendn(fileno($self->{mgr_sock}), $msg, 0);
 }
 
 sub keep_it {
@@ -599,7 +632,7 @@ sub keep_it {
         $self->cmd_to_mgr("push", $conn->{peername}, $conn->{reqs});
         my $ret;
         do {
-            $ret = IO::FDPass::send($self->{mgr_sock}->fileno, $conn->{fh}->fileno);
+            $ret = IO::FDPass::send(fileno $self->{mgr_sock}, $conn->{fd});
             die $! if ( !defined $ret && $! != EAGAIN && $! != EWOULDBLOCK && $! != EINTR);
             #need select?
         } while (!$ret);
@@ -614,7 +647,7 @@ sub accept_or_recv {
     my @for_read = @_;
     my $conn;
     for my $pipe_or_sock ( @for_read ) {
-        if ( $pipe_or_sock->fileno == $self->{listen_sock}->fileno ) {
+        if ( fileno $pipe_or_sock == fileno $self->{listen_sock} ) {
             my ($fh,$peer) = $self->{listen_sock}->accept;
             if ( !$fh && ($! != EINTR && $! != EAGAIN && $! != EWOULDBLOCK && $! != ESPIPE) ) {
                 warn sprintf 'failed to accept: %s (%d)', $!, $!;
@@ -624,29 +657,38 @@ sub accept_or_recv {
             $fh->blocking(0);
             setsockopt($fh, IPPROTO_TCP, TCP_NODELAY, 1)
                 or die "setsockopt(TCP_NODELAY) failed:$!";
+            my ($peerport,$peerhost) = unpack_sockaddr_in $peer;
+            my $peeraddr = inet_ntoa($peerhost);
             $conn = {
-                fh => $fh,
+                fd => fileno $fh,
+                guard => $fh,
                 peername => $peer,
+                peerport => $peerport,
+                peeraddr => $peeraddr,
                 direct => 1,
                 reqs => 0,
             };
             last;
         }
-        elsif ( $pipe_or_sock->fileno == $self->{lstn_pipe}[READER]->fileno ) {
-            my $fd = IO::FDPass::recv($self->{lstn_pipe}[READER]->fileno);
+        elsif ( fileno $pipe_or_sock == fileno $self->{lstn_pipe}[READER] ) {
+            my $fd = IO::FDPass::recv(fileno $self->{lstn_pipe}[READER]);
             if ( $fd < 0 && ($! != EINTR && $! != EAGAIN && $! != EWOULDBLOCK && $! != ESPIPE) ) {
                 warn sprintf("could not recv fd: %s (%d)", $!, $!);
             }
             next if $fd <= 0;
-            my $fh = IO::Socket::INET->new_from_fd($fd,'r+')
-                or die "unable to convert file descriptor to handle: $!";
-            my $peer = getpeername($fh);
-            if ( !$peer ) {
+            my $peer; 
+            if ( _getpeername($fd, $peer) < 0 ) {
                 next;
             }
+            _fcntl($fd, F_SETFD, FD_CLOEXEC);
+            my ($peerport,$peerhost) = unpack_sockaddr_in $peer;
+            my $peeraddr = inet_ntoa($peerhost);
             $conn = {
-                fh => $fh,
+                fd => $fd,
+                guard => AnyEvent::Util::guard { POSIX::close($fd) },
                 peername => $peer,
+                peerport => $peerport,
+                peeraddr => $peeraddr,
                 direct => 0,
                 reqs => 1, #xx
             };
@@ -654,13 +696,11 @@ sub accept_or_recv {
         }
     }
     return unless $conn;
-    return unless $conn->{fh};
-    return unless $conn->{peername};
     $conn;
 }
 
 sub handle_connection {
-    my($self, $env, $conn, $app, $use_keepalive, $is_keepalive, $prebuf, $direct, $reqs) = @_;
+    my($self, $env, $conn, $app, $use_keepalive, $is_keepalive, $prebuf, $reqs) = @_;
     
     my $buf = '';
     my $pipelined_buf='';
@@ -918,5 +958,59 @@ sub _handle_response {
     }
 }
 
+sub _calc_minmax_per_child {
+    my $self = shift;
+    my ($max,$min) = @_;
+    if (defined $min) {
+        srand((rand() * 2 ** 30) ^ $$ ^ time);
+        return $max - int(($max - $min + 1) * rand);
+    } else {
+        return $max;
+    }
+}
+
+# returns value returned by $cb, or undef on timeout or network error
+sub do_io {
+    my ($self, $is_write, $fd, $buf, $len, $off, $timeout) = @_;
+    my $ret;
+    unless ($is_write || delete $self->{_is_deferred_accept}) {
+        goto DO_SELECT;
+    }
+ DO_READWRITE:
+    # try to do the IO
+    if ($is_write) {
+        $ret = POSIX::write($fd, $buf, $len) and return $ret;
+    } else {
+        $ret = POSIX::read($fd, my $read_buf, $len);
+        return if defined $ret && $ret == 0;
+        if ( $ret ) {
+            $$buf = '' unless defined $$buf;
+            substr($$buf, $off, -1, $read_buf);
+            return $ret;
+        }
+    }
+    if ( !$ret && ($! != EINTR && $! != EAGAIN && $! != EWOULDBLOCK) ) {
+        #error
+        return;
+    }
+    # wait for data
+ DO_SELECT:
+    while (1) {
+        my ($rfd, $wfd);
+        my $efd = '';
+        vec($efd, $fd, 1) = 1;
+        if ($is_write) {
+            ($rfd, $wfd) = ('', $efd);
+        } else {
+            ($rfd, $wfd) = ($efd, '');
+        }
+        my $start_at = time;
+        my $nfound =  select($rfd, $wfd, $efd, $timeout);
+        $timeout -= (time - $start_at);
+        last if $nfound;
+        return if $timeout <= 0;
+    }
+    goto DO_READWRITE;
+}
 
 1;

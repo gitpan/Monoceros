@@ -1,6 +1,6 @@
 on test => sub {
     requires 'Test::More', '0.98';
-    requires 'Test::TCP', '1.30';
+    requires 'Test::TCP', '2.00';
     requires 'LWP::UserAgent';
     requires 'Plack::Test::Suite';
 };
@@ -11,6 +11,7 @@ requires 'AnyEvent' => '7.04';
 requires 'Plack' => '1.0023';
 requires 'Net::CIDR::Lite';
 requires 'POSIX::getpeername';
+requires 'POSIX::Socket';
 
 suggests 'EV' => '4.15';
 suggests 'HTTP::Parser::XS' => '0.16';
