@@ -15,5 +15,6 @@ t/03_post.t
 t/04_chunked_req.t
 t/05_chunked_zero_length.t
 t/06_middleware.t
+t/07_harakiri.t
 META.yml
 MANIFEST
