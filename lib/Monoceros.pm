@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.008005;
 
-our $VERSION = "0.24";
+our $VERSION = "0.25";
 
 1;
 __END__
@@ -48,6 +48,8 @@ And this server inherit L<Starlet>. Monoceros supports following features too.
 - hot deploy using L<Server::Starter>
 
 - fast HTTP processing using L<HTTP::Parser::XS> (optional)
+
+- accept4(2) using L<Linux::Socket::Accept4> (optional)
 
 Currently, Monoceros does not support spawn-interval and max-keepalive-reqs.
 

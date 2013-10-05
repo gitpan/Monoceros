@@ -4,8 +4,10 @@
       "Masahiro Nagano <kazeburo@gmail.com>"
    ],
    "dynamic_config" : 0,
-   "generated_by" : "Minilla/v0.6.4",
-   "license" : "perl_5",
+   "generated_by" : "Minilla/v0.7.3",
+   "license" : [
+      "perl_5"
+   ],
    "meta-spec" : {
       "url" : "http://search.cpan.org/perldoc?CPAN::Meta::Spec",
       "version" : "2"
@@ -68,7 +70,7 @@
    "provides" : {
       "Monoceros" : {
          "file" : "lib/Monoceros.pm",
-         "version" : "0.24"
+         "version" : "0.25"
       },
       "Monoceros::Server" : {
          "file" : "lib/Monoceros/Server.pm"
@@ -91,5 +93,5 @@
          "web" : "https://github.com/kazeburo/Monoceros"
       }
    },
-   "version" : "0.24"
+   "version" : "0.25"
 }
