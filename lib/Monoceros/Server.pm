@@ -38,6 +38,10 @@ my $have_accept4 = eval {
     Linux::Socket::Accept4::SOCK_CLOEXEC()|Linux::Socket::Accept4::SOCK_NONBLOCK();
 };
 
+my $have_sendfile = eval {
+    require Sys::Sendfile;
+};
+
 sub new {
     my $class = shift;
     my %args = @_;
@@ -65,12 +69,12 @@ sub new {
     }
 
     my $open_max = eval { POSIX::sysconf (POSIX::_SC_OPEN_MAX ()) - 1 } || 1023;
-
     my $self = bless {
         host                 => $args{host} || 0,
         port                 => $args{port} || 8080,
         max_workers          => $max_workers,
         timeout              => $args{timeout} || 300,
+        disable_keepalive    => (exists $args{keepalive} && !$args{keepalive}) ? 1 : 0,
         keepalive_timeout    => $args{keepalive_timeout} || 10,
         max_keepalive_connection => $args{max_keepalive_connection} || int($open_max/2),
         max_readahead_reqs   => (
@@ -88,7 +92,7 @@ sub new {
                 ? $args{min_reqs_per_child} : undef,
         ),
         max_reqs_per_child   => (
-            $args{max_reqs_per_child} || $args{max_requests} || 100,
+            $args{max_reqs_per_child} || $args{max_requests} || 1000,
         ),
         err_respawn_interval => (
             defined $args{err_respawn_interval}
@@ -565,6 +569,7 @@ sub request_worker {
                 # stop keepalive if SIG{TERM} or SIG{USR1}. but go-on if pipline req
                 my $may_keepalive = 1;
                 $may_keepalive = 0 if ($self->{term_received} || $self->{stop_accept});
+                $may_keepalive = 0 if $self->{disable_keepalive};
                 my $is_keepalive = 1; # to use "keepalive_timeout" in handle_connection, 
                                       #  treat every connection as keepalive
                 my ($keepalive,$pipelined_buf) = $self->handle_connection($env, $conn->{fh}, $app, 
@@ -675,7 +680,7 @@ sub accept_or_recv {
             if ( _getpeername($fd, $peer) < 0 ) {
                 next;
             }
-            open(my $fh, '<&='.$fd)
+            open(my $fh, '>>&='.$fd)
                 or die "could not open fd: $!";
             my ($peerport,$peerhost) = unpack_sockaddr_in $peer;
             my $peeraddr = inet_ntoa($peerhost);
@@ -882,7 +887,7 @@ sub _handle_response {
     }
     elsif ( $protocol eq 'HTTP/1.1' ) {
         if (defined $send_headers{'content-length'}
-                || defined $send_headers{'transfer-encoding'}) {
+            || defined $send_headers{'transfer-encoding'}) {
             # ok
         } elsif ( !Plack::Util::status_with_no_entity_body($status_code) ) {
             push @lines, "Transfer-Encoding: chunked\015\012";
@@ -909,6 +914,27 @@ sub _handle_response {
         warn $! unless $len;
         return;
     }
+
+    if ( $have_sendfile && !$use_chunked
+      && defined $body && ref $body ne 'ARRAY'
+      && fileno($body) ) {
+        my $cl = $send_headers{'content-length'} || -s $body;
+        # sendfile
+        my $use_cork = 0;
+        if ( $^O eq 'linux' ) {
+            setsockopt($conn, IPPROTO_TCP, 3, 1)
+                and $use_cork = 1;
+        }
+        $self->write_all($conn, join('', @lines), $self->{timeout})
+            or return;
+        my $len = $self->sendfile_all($conn, $body, $cl, $self->{timeout});
+        #warn sprintf('%d:%s',$!, $!) unless $len;
+        if ( $use_cork && $$use_keepalive_r ) {
+            setsockopt($conn, IPPROTO_TCP, 3, 0);
+        }
+        return;
+    }
+
     $self->write_all($conn, join('', @lines), $self->{timeout})
         or return;
 
@@ -964,5 +990,67 @@ sub _calc_minmax_per_child {
         return $max;
     }
 }
+
+# returns value returned by $cb, or undef on timeout or network error
+sub do_io {
+    my ($self, $is_write, $sock, $buf, $len, $off, $timeout) = @_;
+    my $ret;
+    unless ($is_write || delete $self->{_is_deferred_accept}) {
+        goto DO_SELECT;
+    }
+ DO_READWRITE:
+    # try to do the IO
+    if ($is_write && $is_write == 1) {
+        $ret = syswrite $sock, $buf, $len, $off
+            and return $ret;
+    } elsif ($is_write && $is_write == 2) {
+        $ret = Sys::Sendfile::sendfile($sock, $buf, $len)
+            and return $ret;
+        $ret = undef if defined $ret && $ret == 0 && $! == EAGAIN; #hmm
+    } else {
+        $ret = sysread $sock, $$buf, $len, $off
+            and return $ret;
+    }
+    unless ((! defined($ret)
+                 && ($! == EINTR || $! == EAGAIN || $! == EWOULDBLOCK))) {
+        return;
+    }
+    # wait for data
+ DO_SELECT:
+    while (1) {
+        my ($rfd, $wfd);
+        my $efd = '';
+        vec($efd, fileno($sock), 1) = 1;
+        if ($is_write) {
+            ($rfd, $wfd) = ('', $efd);
+        } else {
+            ($rfd, $wfd) = ($efd, '');
+        }
+        my $start_at = time;
+        my $nfound = select($rfd, $wfd, $efd, $timeout);
+        $timeout -= (time - $start_at);
+        last if $nfound;
+        return if $timeout <= 0;
+    }
+    goto DO_READWRITE;
+}
+
+sub sendfile_timeout {
+    my ($self, $sock, $fh, $len, $off, $timeout) = @_;
+    $self->do_io(2, $sock, $fh, $len, $off, $timeout);
+}
+
+sub sendfile_all {
+    my ($self, $sock, $fh, $cl, $timeout) = @_;
+    my $off = 0;
+    while (my $len = $cl - $off) {
+        my $ret = $self->sendfile_timeout($sock, $fh, $len, $off, $timeout)
+            or return;
+        $off += $ret;
+        seek($fh, $off, 0) if $cl != $off;
+    }
+    return $cl;
+}
+
 
 1;

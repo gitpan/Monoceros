@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.008005;
 
-our $VERSION = "0.25";
+our $VERSION = "0.26";
 
 1;
 __END__
@@ -72,7 +72,7 @@ timeout for persistent connections (default: 10)
 
 =head2 --max-reqs-per-child=#
 
-max. number of requests to be handled before a worker process exits (default: 100)
+max. number of requests to be handled before a worker process exits (default: 1000)
 
 =head2 --min-reqs-per-child=#
 
@@ -90,6 +90,9 @@ max. number of requests to continue to read a request in a worker process. Monoc
 
 if set, randomizes the number of requests to continue to read a request between the value and that supplied by C<--max-readahead-reqs> (default: none)
 
+=head2 --disable-keepalive
+
+disable HTTP keepalive feature (default: enabled)
 
 =head1 RECOMMENDED MODULES
 
@@ -98,6 +101,21 @@ For more performance. I recommends you to install these module.
 - L<EV>
 
 - L<HTTP::Parser::XS>
+
+=head1 EXPERIMENTAL FEATURES
+
+=over 4
+
+=item accept4
+
+Linux only. If Linux::Socket::Accept4 is available, Monoceros use it.
+accept4(2) can do accept(2) and set SOCK_CLOEXEC|SOCK_NONBLOCK at once. 
+
+=item sendfile
+
+Monoceros send IO::Handle like body with sendfile(2). L<Sys::Sendfile> is required.
+
+=back
 
 =head1 SEE ALSO
 

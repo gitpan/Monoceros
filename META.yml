@@ -12,7 +12,7 @@ configure_requires:
   CPAN::Meta::Prereqs: 0
   Module::Build: 0.38
 dynamic_config: 0
-generated_by: 'Minilla/v0.7.3, CPAN::Meta::Converter version 2.130880'
+generated_by: 'Minilla/v0.8.0, CPAN::Meta::Converter version 2.130880'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -27,10 +27,11 @@ no_index:
     - eg
     - examples
     - author
+    - builder
 provides:
   Monoceros:
     file: lib/Monoceros.pm
-    version: 0.25
+    version: 0.26
   Monoceros::Server:
     file: lib/Monoceros/Server.pm
   Plack::Handler::Monoceros:
@@ -51,4 +52,4 @@ resources:
   bugtracker: https://github.com/kazeburo/Monoceros/issues
   homepage: https://github.com/kazeburo/Monoceros
   repository: git://github.com/kazeburo/Monoceros.git
-version: 0.25
+version: 0.26
